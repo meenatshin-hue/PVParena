@@ -1,0 +1,5 @@
+streamlit>=1.55
+pillow
+sqlalchemy>=2.0
+# Only needed when the database is Postgres (e.g. when deployed):
+psycopg2-binary

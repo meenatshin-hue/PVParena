@@ -1,0 +1,721 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PvP Arena</title>
+<style>
+  html, body { margin: 0; background: #0b1020; color: #f8fafc;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #wrap { position: relative; width: 100%; max-width: 960px; margin: 0 auto; aspect-ratio: 960 / 540; }
+  canvas { display: block; width: 100%; height: 100%; border-radius: 12px; outline: none; }
+  .overlay { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center;
+    justify-content: center; gap: 10px; padding: 16px; box-sizing: border-box; overflow: auto;
+    text-align: center; background: rgba(8, 12, 28, .88); border-radius: 12px; }
+  .overlay.show { display: flex; }
+  h1, h2, p { margin: 0; }
+  h2 { font-size: 22px; }
+  p, .sub { color: #cbd5e1; font-size: 14px; }
+  .kicker { color: #fbbf24; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; font-size: 13px; }
+  .label { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #94a3b8; margin-top: 4px; }
+  .cards { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+  .card { position: relative; width: 108px; padding: 8px 6px; border-radius: 10px; border: 2px solid #334155;
+    background: #1e293b; color: #f8fafc; font: inherit; cursor: pointer; display: flex; flex-direction: column;
+    align-items: center; gap: 3px; }
+  .card:hover:not(:disabled) { border-color: #64748b; }
+  .card.sel { border-color: #22c55e; background: #14532d; }
+  .card:disabled { opacity: .4; cursor: not-allowed; }
+  .pic { height: 48px; display: grid; place-items: center; font-size: 34px; }
+  .pic img { max-height: 48px; max-width: 72px; image-rendering: pixelated; }
+  .pic img.tile { border-radius: 8px; }
+  .nm { font-size: 12px; font-weight: 700; line-height: 1.2; }
+  .st { font-size: 11px; color: #cbd5e1; }
+  .new { position: absolute; top: -8px; right: -6px; background: #f59e0b; color: #111; font-size: 10px;
+    font-weight: 800; padding: 1px 6px; border-radius: 999px; }
+  button.go { background: #16a34a; color: #fff; border: 0; border-radius: 10px; padding: 10px 30px;
+    font-size: 18px; font-weight: 800; cursor: pointer; margin-top: 4px; }
+  button.go:hover { background: #15803d; }
+  button.link { background: none; border: 0; color: #94a3b8; text-decoration: underline; cursor: pointer; font-size: 12px; }
+  .big { font-size: 64px; line-height: 1; }
+  .unlock { display: flex; align-items: center; gap: 12px; background: #1e293b; border: 2px solid #f59e0b;
+    border-radius: 12px; padding: 10px 16px; }
+  .unlock img { max-height: 56px; max-width: 80px; image-rendering: pixelated; border-radius: 8px; }
+  .youwin { font-size: clamp(56px, 12vw, 104px); font-weight: 900; color: #facc15; letter-spacing: .02em;
+    text-shadow: 0 5px 0 #a16207, 0 0 40px rgba(250, 204, 21, .55); animation: pop 1s ease-in-out infinite alternate; }
+  @keyframes pop { from { transform: scale(1); } to { transform: scale(1.06); } }
+  .who { font-size: 13px; color: #cbd5e1; }
+  .who b { color: #fff; }
+  .err { color: #fca5a5; }
+  form.login { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  form.login input { font: inherit; font-size: 18px; padding: 9px 14px; border-radius: 10px; border: 2px solid #475569;
+    background: #0f172a; color: #fff; width: 240px; outline: none; }
+  form.login input:focus { border-color: #22c55e; }
+  form.login .go { margin-top: 0; }
+  button.go:disabled { opacity: .6; cursor: wait; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c" tabindex="0" aria-label="Arena"></canvas>
+  <div class="overlay" id="equip"></div>
+  <div class="overlay" id="result"></div>
+  <div class="overlay" id="paused"><h2>Paused</h2><p>Click here to keep fighting.</p></div>
+  <div class="overlay" id="login"></div>
+</div>
+
+<script>
+// Sent by app.py with the first render (see "streamlit" at the bottom).
+let ASSETS = {};
+
+// ---------- rules ----------
+const W = 960, H = 540, GROUND = 452, LEVELS = 10;
+const SHIELD_TIME = 3, SHIELD_RECHARGE = 30;
+const PLAYER_SPEED = 280, PLAYER_COOLDOWN = 0.5, GRAVITY = 2000, JUMP_V = 820, FAST_FALL = 2600;
+const VERTICAL_REACH = 90;
+
+const CHARS = [
+  { id: "duck",  name: "Duck",  hp: 200,  emoji: "🦆" },
+  { id: "horse", name: "Horse", hp: 400,  emoji: "🐴" },
+  { id: "puppy", name: "Puppy", hp: 500,  emoji: "🐶" },
+  { id: "lion",  name: "Lion",  hp: 700,  emoji: "🦁" },
+  { id: "shark", name: "Shark", hp: 800,  emoji: "🦈" },
+  { id: "alien", name: "Alien", hp: 2000, emoji: "👽" },
+];
+const WEAPONS = [
+  { id: "sword",        name: "Sword",                dmg: 10, reach: 150 },
+  { id: "silver_sword", name: "Silver Sword",         dmg: 15, reach: 160 },
+  { id: "axe",          name: "Axe",                  dmg: 20, reach: 150 },
+  { id: "chainsaw",     name: "Chainsaw",             dmg: 40, reach: 145 },
+  { id: "gold_sword",   name: "Legendary Gold Sword", dmg: 50, reach: 175 },
+];
+// What beating each level unlocks.
+const UNLOCKS = { 1: ["char", "horse"], 2: ["weapon", "silver_sword"], 3: ["char", "puppy"], 4: ["weapon", "axe"],
+  5: ["char", "lion"], 6: ["weapon", "chainsaw"], 7: ["char", "shark"], 8: ["weapon", "gold_sword"], 9: ["char", "alien"] };
+// The AI's fighter and weapon on each level; you always have a matching fighter and weapon unlocked.
+const OPPONENTS = [["duck", "sword"], ["duck", "sword"], ["horse", "silver_sword"], ["horse", "silver_sword"],
+  ["puppy", "axe"], ["lion", "axe"], ["lion", "chainsaw"], ["shark", "chainsaw"], ["shark", "gold_sword"], ["alien", "gold_sword"]];
+
+const byId = (list, id) => list.find(x => x.id === id);
+const listOf = kind => kind === "char" ? CHARS : WEAPONS;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+function unlockLevel(kind, id) {
+  if (id === "duck" || id === "sword") return 0;
+  for (const [lvl, [k, i]] of Object.entries(UNLOCKS)) if (k === kind && i === id) return +lvl;
+  return Infinity;
+}
+
+function aiParams(level) {
+  const t = (level - 1) / (LEVELS - 1);  // 0 on level 1, 1 on level 10
+  return {
+    t,
+    speed: 120 + 180 * t,          // px per second
+    cooldown: 1.6 - 1.05 * t,      // seconds between attacks
+    hitChance: 0.5 + 0.45 * t,
+    reaction: 0.5 - 0.4 * t,       // pause before attacking once in reach
+    think: 0.6 - 0.45 * t,         // seconds between decisions
+    reactShield: 0.55 * t,         // chance to shield in time when you strike
+    jumpChance: 0.05 + 0.25 * t,   // chance per decision to jump out of your reach
+    jumpGap: 2.5 - 1.3 * t,        // minimum seconds between dodge jumps
+  };
+}
+
+// ---------- talking to app.py ----------
+// The game runs in a Streamlit component. app.py sends it the pictures and its answers with each render,
+// and the game sends requests (load or save a player) back as the component's value.
+let DATABASE = false;                  // true when app.py has a working database
+let started = false, nextRequest = 1;
+const waiting = {};
+
+function post(type, data = {}) { window.parent.postMessage({ isStreamlitMessage: true, type, ...data }, "*"); }
+
+function request(op, data) {
+  const id = `${Date.now()}-${nextRequest++}`;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { delete waiting[id]; reject(new Error("no answer from the server")); }, 15000);
+    waiting[id] = { resolve, reject, timer };
+    post("streamlit:setComponentValue", { value: { id, op, ...data }, dataType: "json" });
+  });
+}
+
+window.addEventListener("message", e => {
+  if (e.source !== window.parent || !e.data || e.data.type !== "streamlit:render") return;
+  const args = e.data.args || {};
+  if (!started) {
+    started = true;
+    ASSETS = args.assets || {};
+    DATABASE = !!args.database;
+    loadArt();
+    boot();
+  }
+  const answer = args.answer, w = answer && waiting[answer.id];
+  if (!w) return;
+  delete waiting[answer.id];
+  clearTimeout(w.timer);
+  if (answer.error) w.reject(new Error(answer.error)); else w.resolve(answer.row);
+});
+
+// ---------- saved progress ----------
+// With DATABASE set, progress is saved in app.py's database under the player's name (table pvp_players).
+// Without it, or when playing offline, it's saved in this browser.
+const SAVE_KEY = "pvp-arena-v1", PLAYER_KEY = "pvp-arena-player";
+const NEW_SAVE = () => ({ level: 1, best: 0, char: "duck", weapon: "sword", fresh: null, wins: 0, losses: 0 });
+let save = NEW_SAVE();
+let playerName = null;                 // set while saving online
+let syncStatus = "saved", syncError = "";
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+};
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const unlocked = (kind, id) => unlockLevel(kind, id) <= save.best;
+
+function loadLocal() {
+  playerName = null;
+  save = NEW_SAVE();
+  try { const s = JSON.parse(store.get(SAVE_KEY)); if (s) save = { ...save, ...s }; } catch (e) {}
+}
+
+async function loadPlayer(name) {
+  const r = await request("load", { name: name.trim() });
+  if (r) {
+    playerName = r.name;
+    save = { level: r.level, best: r.best, char: r.fighter, weapon: r.weapon, fresh: r.fresh, wins: r.wins, losses: r.losses };
+  } else {
+    playerName = name.trim();
+    save = NEW_SAVE();
+    await pushSave();
+    if (syncStatus === "error") throw new Error(syncError);
+  }
+  store.set(PLAYER_KEY, playerName);
+  setSync("saved");
+}
+
+async function pushSave() {
+  try {
+    await request("save", { row: { name: playerName, level: save.level, best: save.best,
+      fighter: save.char, weapon: save.weapon, fresh: save.fresh, wins: save.wins, losses: save.losses } });
+    setSync("saved");
+  } catch (e) {
+    setSync("error", e.message);
+  }
+}
+
+let saveTimer = null, saveQueue = Promise.resolve();
+function persist() {
+  if (!playerName) { store.set(SAVE_KEY, JSON.stringify(save)); return; }
+  setSync("saving");
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => { saveQueue = saveQueue.then(pushSave); }, 250);
+}
+
+function syncText() {
+  if (syncStatus === "saving") return "☁ Saving…";
+  if (syncStatus === "error") return `⚠ Couldn't save online (${esc(syncError)}). Keep playing; it retries on your next change.`;
+  return "☁ Saved online";
+}
+function setSync(status, error = "") {
+  syncStatus = status; syncError = error;
+  const el = document.getElementById("sync");
+  if (el) { el.innerHTML = syncText(); el.className = status === "error" ? "err" : ""; }
+}
+
+// ---------- art ----------
+const IMG = {};
+function loadArt() { for (const [k, src] of Object.entries(ASSETS)) { const im = new Image(); im.src = src; IMG[k] = im; } }
+const img = k => (IMG[k] && IMG[k].complete && IMG[k].naturalWidth) ? IMG[k] : null;
+
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+const dpr = Math.min(2, window.devicePixelRatio || 1);
+canvas.width = W * dpr; canvas.height = H * dpr;
+ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+const EMOJI_FONT = '80px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif';
+
+function rr(g, x, y, w, h, r) { g.beginPath(); if (g.roundRect) g.roundRect(x, y, w, h, r); else g.rect(x, y, w, h); }
+
+// ---------- game state ----------
+let state = "equip";   // equip | fight | ko | result | paused
+let t = 0;             // game clock in seconds (stops while paused)
+let player = null, enemy = null, ai = aiParams(1);
+let floats = [], koUntil = 0, outcome = null;
+const keys = { left: false, right: false, down: false };
+
+function makeFighter(charId, weaponId, x, isAI) {
+  const c = byId(CHARS, charId);
+  return { char: c, weapon: byId(WEAPONS, weaponId), x, y: GROUND, vy: 0, hp: c.hp, maxHp: c.hp,
+    facing: isAI ? -1 : 1, isAI, knock: 0, attackReadyAt: 0, swingUntil: 0, hurtUntil: 0,
+    shieldUntil: 0, shieldReadyAt: 0, thinkIn: 0, moveDir: 0, attackAt: null, nextJumpAt: 0 };
+}
+
+const onGround = f => f.y >= GROUND;
+const shieldOn = f => t < f.shieldUntil;
+const shieldReady = f => t >= f.shieldReadyAt && !shieldOn(f);
+const inReach = (a, d) => Math.abs(d.x - a.x) <= a.weapon.reach && Math.abs(d.y - a.y) <= VERTICAL_REACH;
+
+function raiseShield(f) {
+  if (!shieldReady(f)) return false;
+  f.shieldUntil = t + SHIELD_TIME;
+  f.shieldReadyAt = t + SHIELD_TIME + SHIELD_RECHARGE;
+  return true;
+}
+
+function floatText(x, y, text, color) { floats.push({ x, y, text, color, born: t, until: t + 0.9 }); }
+
+function attack(a, d) {
+  if (state !== "fight" || t < a.attackReadyAt) return;
+  if (!inReach(a, d)) { if (!a.isAI) floatText(a.x, a.y - 120, "Out of reach!", "#fbbf24"); return; }
+  a.attackReadyAt = t + (a.isAI ? ai.cooldown : PLAYER_COOLDOWN);
+  a.swingUntil = t + 0.22;
+  if (!a.isAI && shieldReady(d) && Math.random() < ai.reactShield) raiseShield(d);
+  if (shieldOn(d)) { floatText(d.x, d.y - 120, "BLOCKED", "#7dd3fc"); return; }
+  if (a.isAI && Math.random() > ai.hitChance) { floatText(d.x, d.y - 120, "Miss", "#e2e8f0"); return; }
+  d.hp = Math.max(0, d.hp - a.weapon.dmg);
+  d.hurtUntil = t + 0.25;
+  d.knock = Math.sign(d.x - a.x || 1) * 260;
+  floatText(d.x, d.y - 120, `-${a.weapon.dmg} xp`, "#f87171");
+  if (d.hp <= 0) { state = "ko"; koUntil = t + 1.2; outcome = d.isAI ? "won" : "lost"; }
+}
+
+// ---------- AI ----------
+function updateAI(a, p, dt) {
+  const dist = p.x - a.x, ad = Math.abs(dist), toward = Math.sign(dist) || 1;
+  a.thinkIn -= dt;
+  if (a.thinkIn <= 0) {
+    a.thinkIn = ai.think * (0.7 + Math.random() * 0.6);
+    if (shieldOn(p) && ai.t >= 0.4) a.moveDir = -toward * 0.5;               // wait out your shield
+    else if (ad > a.weapon.reach * 0.85) a.moveDir = toward;                  // close in
+    else if (ad < 70) a.moveDir = -toward;                                    // make room to swing
+    else a.moveDir = Math.random() < 0.5 ? 0 : toward * 0.4;
+    if (Math.random() < 0.35 * (1 - ai.t)) a.moveDir = 0;                    // easy levels dawdle
+    if (onGround(a) && inReach(p, a) && t >= a.nextJumpAt && t >= p.attackReadyAt - 0.1
+        && Math.random() < ai.jumpChance) {                                   // dodge by jumping
+      a.vy = -JUMP_V; a.nextJumpAt = t + ai.jumpGap;
+    }
+    if (ai.t > 0.3 && a.hp < a.maxHp * 0.35 && inReach(p, a) && Math.random() < ai.t) raiseShield(a);
+  }
+  a.x += a.moveDir * ai.speed * dt;
+
+  const wantsToHit = inReach(a, p) && !(shieldOn(p) && ai.t >= 0.4);
+  if (!wantsToHit) { a.attackAt = null; return; }
+  if (t < a.attackReadyAt) return;
+  if (a.attackAt === null) a.attackAt = t + ai.reaction;
+  if (t >= a.attackAt) { a.attackAt = null; attack(a, p); }
+}
+
+// ---------- update ----------
+function physics(f, dt) {
+  if (f.knock) { f.x += f.knock * dt; f.knock *= Math.pow(0.002, dt); if (Math.abs(f.knock) < 5) f.knock = 0; }
+  f.vy += GRAVITY * dt;
+  f.y += f.vy * dt;
+  if (f.y >= GROUND) { f.y = GROUND; f.vy = 0; }
+  f.x = clamp(f.x, 56, W - 56);
+}
+
+function update(dt) {
+  if (state === "fight") {
+    player.x += ((keys.right ? 1 : 0) - (keys.left ? 1 : 0)) * PLAYER_SPEED * dt;
+    if (keys.down && !onGround(player)) player.vy += FAST_FALL * dt;
+    updateAI(enemy, player, dt);
+  }
+  physics(player, dt);
+  physics(enemy, dt);
+  player.facing = Math.sign(enemy.x - player.x) || player.facing;
+  enemy.facing = Math.sign(player.x - enemy.x) || enemy.facing;
+  floats = floats.filter(f => t < f.until);
+  if (state === "ko" && t >= koUntil) showResult();
+}
+
+// ---------- drawing: weapons ----------
+const SWORD_STYLES = {
+  sword:        { blade: "#b45309", edge: "#451a03", guard: "#78350f", grip: "#451a03", len: 72 },
+  silver_sword: { blade: "#f1f5f9", edge: "#64748b", guard: "#475569", grip: "#78350f", len: 80 },
+  gold_sword:   { blade: "#facc15", edge: "#a16207", guard: "#ca8a04", grip: "#7f1d1d", len: 90, glow: "#fde047" },
+};
+
+// Draws a weapon with its grip at (0, 0) and its blade pointing up (-y).
+function drawWeapon(g, id, swinging) {
+  const im = img(id);
+  if (im) {
+    // The pictures show the weapon on a diagonal, grip bottom-left; turn that diagonal to point up.
+    const w = im.naturalWidth, h = im.naturalHeight, s = 118 / Math.hypot(w, h);
+    g.save();
+    g.rotate(-Math.PI / 2 + Math.atan2(h, w));
+    if (id === "gold_sword") { g.shadowColor = "#fde047"; g.shadowBlur = 14; }
+    g.imageSmoothingEnabled = false;
+    g.drawImage(im, -w * s * 0.1, -h * s * 0.9, w * s, h * s);
+    g.restore();
+    return;
+  }
+  if (id === "axe") return drawAxe(g);
+  if (id === "chainsaw") return drawChainsaw(g, swinging);
+  const s = SWORD_STYLES[id];
+  g.save();
+  g.fillStyle = s.grip; g.fillRect(-4, -2, 8, 22);
+  g.fillStyle = s.guard; g.beginPath(); g.arc(0, 22, 5, 0, Math.PI * 2); g.fill();
+  if (s.glow) { g.shadowColor = s.glow; g.shadowBlur = 16; }
+  g.fillStyle = s.blade; g.strokeStyle = s.edge; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(-6, -8); g.lineTo(6, -8); g.lineTo(5, -s.len); g.lineTo(0, -s.len - 12); g.lineTo(-5, -s.len);
+  g.closePath(); g.fill(); g.stroke();
+  g.shadowBlur = 0;
+  g.fillStyle = s.guard; rr(g, -18, -10, 36, 7, 3); g.fill();
+  g.restore();
+}
+
+function drawAxe(g) {
+  g.fillStyle = "#92400e"; rr(g, -4, -86, 8, 108, 3); g.fill();
+  g.fillStyle = "#d1d5db"; g.strokeStyle = "#4b5563"; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(4, -84); g.quadraticCurveTo(30, -96, 46, -88); g.quadraticCurveTo(38, -66, 46, -44);
+  g.quadraticCurveTo(30, -38, 4, -52); g.closePath(); g.fill(); g.stroke();
+}
+
+function drawChainsaw(g, swinging) {
+  g.fillStyle = "#6b7280"; g.strokeStyle = "#374151"; g.lineWidth = 2; rr(g, -8, -92, 16, 84, 8); g.fill(); g.stroke();
+  g.fillStyle = "#e5e7eb";
+  const off = swinging ? (t * 400) % 10 : 0;
+  for (let y = -90 + off; y < -12; y += 10) {
+    g.beginPath(); g.moveTo(8, y); g.lineTo(13, y + 3); g.lineTo(8, y + 6); g.fill();
+    g.beginPath(); g.moveTo(-8, y); g.lineTo(-13, y + 3); g.lineTo(-8, y + 6); g.fill();
+  }
+  g.fillStyle = "#ea580c"; g.strokeStyle = "#7c2d12"; rr(g, -16, -14, 32, 30, 6); g.fill(); g.stroke();
+}
+
+const iconCache = {};
+function weaponIcon(id) {
+  if (ASSETS[id]) return ASSETS[id];
+  if (!iconCache[id]) {
+    const c = document.createElement("canvas"); c.width = c.height = 96;
+    const g = c.getContext("2d");
+    g.translate(30, 72); g.rotate(Math.PI / 4); g.scale(0.62, 0.62);
+    drawWeapon(g, id, false);
+    iconCache[id] = c.toDataURL();
+  }
+  return iconCache[id];
+}
+
+// ---------- drawing: arena, fighters, HUD ----------
+function drawArena() {
+  const sky = ctx.createLinearGradient(0, 0, 0, GROUND);
+  sky.addColorStop(0, "#38bdf8"); sky.addColorStop(1, "#e0f2fe");
+  ctx.fillStyle = sky; ctx.fillRect(0, 0, W, GROUND);
+  ctx.fillStyle = "#fef08a"; ctx.beginPath(); ctx.arc(820, 120, 40, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#86efac";
+  ctx.beginPath(); ctx.moveTo(0, GROUND);
+  for (let x = 0; x <= W; x += 40) ctx.lineTo(x, GROUND - 70 - Math.sin(x / 130) * 30 - Math.sin(x / 47) * 8);
+  ctx.lineTo(W, GROUND); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = "#4ade80"; ctx.fillRect(0, GROUND - 14, W, 14);
+  ctx.fillStyle = "#a16207"; ctx.fillRect(0, GROUND, W, H - GROUND);
+  ctx.fillStyle = "#854d0e";
+  for (let x = 0; x < W; x += 48) ctx.fillRect(x, GROUND + 20 + (x / 48 % 2) * 22, 26, 6);
+}
+
+function drawFighter(f) {
+  const hurt = t < f.hurtUntil, shake = hurt ? (Math.random() - 0.5) * 8 : 0;
+  const air = clamp((GROUND - f.y) / 200, 0, 1);
+  ctx.fillStyle = `rgba(0,0,0,${0.3 - 0.18 * air})`;
+  ctx.beginPath(); ctx.ellipse(f.x, GROUND + 6, 46 * (1 - 0.4 * air), 9 * (1 - 0.4 * air), 0, 0, Math.PI * 2); ctx.fill();
+
+  ctx.save();
+  ctx.translate(f.x + shake, f.y);
+  const im = img(f.char.id);
+  if (im) {
+    ctx.save();
+    rr(ctx, -46, -94, 92, 92, 18); ctx.clip();
+    ctx.drawImage(im, -46, -94, 92, 92);
+    ctx.restore();
+    rr(ctx, -46, -94, 92, 92, 18); ctx.lineWidth = 3; ctx.strokeStyle = f.isAI ? "#ef4444" : "#22c55e"; ctx.stroke();
+  } else {
+    ctx.save();
+    ctx.scale(-f.facing, 1);  // most animal emoji face left
+    ctx.font = EMOJI_FONT; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(f.char.emoji, 0, -48);
+    ctx.restore();
+  }
+  if (hurt) { rr(ctx, -46, -94, 92, 92, 18); ctx.fillStyle = "rgba(239,68,68,0.35)"; ctx.fill(); }
+
+  const swing = Math.max(0, (f.swingUntil - t) / 0.22);  // 1 -> 0 over a swing
+  const angle = swing > 0 ? -0.9 + (1 - swing) * 2.3 : -0.45 + Math.sin(t * 3 + (f.isAI ? 1 : 0)) * 0.05;
+  ctx.save();
+  ctx.scale(f.facing, 1);
+  ctx.translate(40, -36);
+  ctx.rotate(angle);
+  drawWeapon(ctx, f.weapon.id, swing > 0);
+  ctx.restore();
+
+  if (shieldOn(f)) {
+    const left = f.shieldUntil - t;
+    if (!(left < 0.7 && Math.floor(t * 12) % 2)) {
+      ctx.beginPath(); ctx.arc(0, -48, 74 + Math.sin(t * 8) * 3, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(56,189,248,0.2)"; ctx.fill();
+      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(125,211,252,0.95)"; ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+function drawPanel(x, f, who, alignRight) {
+  const y = 12, w = 380;
+  ctx.fillStyle = "rgba(15,23,42,0.78)"; rr(ctx, x, y, w, 70, 10); ctx.fill();
+  const tx = alignRight ? x + w - 12 : x + 12;
+  ctx.textAlign = alignRight ? "right" : "left"; ctx.textBaseline = "top";
+  ctx.fillStyle = "#fff"; ctx.font = "bold 15px system-ui, sans-serif";
+  ctx.fillText(`${who} · ${f.char.name} · ${f.weapon.name}`, tx, y + 8);
+
+  const bw = w - 24, frac = f.hp / f.maxHp;
+  ctx.fillStyle = "#334155"; rr(ctx, x + 12, y + 30, bw, 12, 6); ctx.fill();
+  if (frac > 0) {
+    ctx.fillStyle = frac > 0.5 ? "#22c55e" : frac > 0.25 ? "#f59e0b" : "#ef4444";
+    rr(ctx, alignRight ? x + 12 + bw * (1 - frac) : x + 12, y + 30, bw * frac, 12, 6); ctx.fill();
+  }
+  ctx.font = "13px system-ui, sans-serif"; ctx.fillStyle = "#e2e8f0";
+  ctx.fillText(`${Math.ceil(f.hp)} / ${f.maxHp} xp`, tx, y + 48);
+
+  let label, color;
+  if (shieldOn(f)) { label = `🛡 ON ${(f.shieldUntil - t).toFixed(1)}s`; color = "#7dd3fc"; }
+  else if (t < f.shieldReadyAt) { label = `🛡 recharging ${Math.ceil(f.shieldReadyAt - t)}s`; color = "#94a3b8"; }
+  else { label = f.isAI ? "🛡 ready" : "🛡 ready (Space)"; color = "#86efac"; }
+  ctx.textAlign = alignRight ? "left" : "right"; ctx.fillStyle = color;
+  ctx.fillText(label, alignRight ? x + 12 : x + w - 12, y + 48);
+
+  if (!f.isAI && t < f.attackReadyAt) {  // your attack cooldown
+    const ready = 1 - (f.attackReadyAt - t) / PLAYER_COOLDOWN;
+    ctx.fillStyle = "#fbbf24"; ctx.fillRect(x + 12, y + 66, (w - 24) * ready, 2);
+  }
+}
+
+function render() {
+  drawArena();
+  if (player && enemy) {
+    drawFighter(enemy);
+    drawFighter(player);
+    drawPanel(16, player, "YOU", false);
+    drawPanel(W - 396, enemy, "AI", true);
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    ctx.fillStyle = "rgba(15,23,42,0.78)"; rr(ctx, W / 2 - 52, 12, 104, 44, 10); ctx.fill();
+    ctx.fillStyle = "#fbbf24"; ctx.font = "bold 12px system-ui, sans-serif"; ctx.fillText("LEVEL", W / 2, 18);
+    ctx.fillStyle = "#fff"; ctx.font = "bold 18px system-ui, sans-serif"; ctx.fillText(`${save.level} / ${LEVELS}`, W / 2, 32);
+
+    for (const fl of floats) {
+      const k = (t - fl.born) / (fl.until - fl.born);
+      ctx.globalAlpha = 1 - k;
+      ctx.font = "bold 22px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.lineWidth = 4; ctx.strokeStyle = "rgba(15,23,42,0.85)";
+      ctx.strokeText(fl.text, fl.x, fl.y - k * 40); ctx.fillStyle = fl.color; ctx.fillText(fl.text, fl.x, fl.y - k * 40);
+      ctx.globalAlpha = 1;
+    }
+    if (state === "ko") {
+      ctx.font = "900 96px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.lineWidth = 8; ctx.strokeStyle = "#0f172a"; ctx.strokeText("K.O.!", W / 2, H / 2 - 30);
+      ctx.fillStyle = outcome === "won" ? "#facc15" : "#ef4444"; ctx.fillText("K.O.!", W / 2, H / 2 - 30);
+    }
+  }
+  ctx.textAlign = "center"; ctx.textBaseline = "bottom"; ctx.font = "13px system-ui, sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.fillText("A/D or ←/→ move  ·  W/↑ jump  ·  S/↓ drop  ·  click the opponent to attack  ·  Space shield", W / 2, H - 10);
+}
+
+// ---------- screens ----------
+const equipEl = document.getElementById("equip");
+const resultEl = document.getElementById("result");
+const pausedEl = document.getElementById("paused");
+const loginEl = document.getElementById("login");
+function show(el) { for (const o of [equipEl, resultEl, pausedEl, loginEl]) o.classList.toggle("show", o === el); }
+
+function showLogin(message = "", typed = "") {
+  state = "login";
+  loginEl.innerHTML = `
+    <div class="kicker">PvP Arena</div>
+    <h2>Who's playing?</h2>
+    <p>Your progress is saved online under this name, so you can carry on from any computer.</p>
+    <form class="login" id="login-form">
+      <input id="player-name" maxlength="24" placeholder="Your name" autocomplete="off"
+        value="${esc(typed || playerName || store.get(PLAYER_KEY) || "")}">
+      <button class="go" type="submit">Play</button>
+    </form>
+    ${message ? `<p class="err">${esc(message)}</p><button class="link" id="offline">Play without saving online</button>` : ""}`;
+  const form = loginEl.querySelector("#login-form"), input = loginEl.querySelector("#player-name");
+  form.addEventListener("submit", async e => {
+    e.preventDefault();
+    const name = input.value.trim();
+    if (!name) { input.focus(); return; }
+    const button = form.querySelector("button");
+    button.disabled = true; button.textContent = "Loading…";
+    try { await loadPlayer(name); showEquip(); }
+    catch (err) { playerName = null; showLogin(`Couldn't reach the database: ${err.message}`, name); }
+  });
+  const offline = loginEl.querySelector("#offline");
+  if (offline) offline.addEventListener("click", () => { loadLocal(); showEquip(); });
+  show(loginEl);
+  input.focus();
+}
+
+function whoHtml() {
+  if (!playerName) return `<div class="who">Progress is saved in this browser only.${DATABASE
+    ? ' <button class="link" id="switch">Save online</button>' : ""}</div>`;
+  return `<div class="who">Playing as <b>${esc(playerName)}</b> · ${save.wins} win${save.wins === 1 ? "" : "s"} ·
+    ${save.losses} loss${save.losses === 1 ? "" : "es"} · <span id="sync" class="${syncStatus === "error" ? "err" : ""}">${syncText()}</span>
+    · <button class="link" id="switch">Switch player</button></div>`;
+}
+
+function picHtml(kind, item) {
+  if (kind === "char") return ASSETS[item.id] ? `<img class="tile" src="${ASSETS[item.id]}" alt="">` : item.emoji;
+  return `<img src="${weaponIcon(item.id)}" alt="">`;
+}
+
+function card(kind, item) {
+  const open = unlocked(kind, item.id);
+  const sel = (kind === "char" ? save.char : save.weapon) === item.id;
+  const stat = kind === "char" ? `${item.hp} xp health` : `${item.dmg} xp damage`;
+  return `<button class="card${sel ? " sel" : ""}" data-kind="${kind}" data-id="${item.id}" ${open ? "" : "disabled"}>
+    ${save.fresh === `${kind}:${item.id}` ? '<span class="new">NEW</span>' : ""}
+    <span class="pic">${picHtml(kind, item)}</span><span class="nm">${item.name}</span>
+    <span class="st">${open ? stat : `🔒 Beat level ${unlockLevel(kind, item.id)}`}</span></button>`;
+}
+
+function showEquip() {
+  state = "equip";
+  if (!unlocked("char", save.char)) save.char = "duck";
+  if (!unlocked("weapon", save.weapon)) save.weapon = "sword";
+  const [oc, ow] = OPPONENTS[save.level - 1], oChar = byId(CHARS, oc), oWeapon = byId(WEAPONS, ow);
+  equipEl.innerHTML = `
+    ${whoHtml()}
+    <div class="kicker">Level ${save.level} of ${LEVELS}</div>
+    <h2>Your opponent: ${oChar.name} with the ${oWeapon.name}</h2>
+    <div class="sub">${oChar.hp} xp health · ${oWeapon.dmg} xp damage per hit · AI difficulty ${save.level}/10</div>
+    <div class="label">Choose your fighter</div>
+    <div class="cards">${CHARS.map(c => card("char", c)).join("")}</div>
+    <div class="label">Choose your weapon</div>
+    <div class="cards">${WEAPONS.map(w => card("weapon", w)).join("")}</div>
+    <button class="go" id="fight">Fight!</button>
+    ${save.best > 0 || save.level > 1 ? '<button class="link" id="reset">Reset progress</button>' : ""}`;
+  equipEl.querySelectorAll(".card").forEach(b => b.addEventListener("click", () => {
+    save[b.dataset.kind === "char" ? "char" : "weapon"] = b.dataset.id;
+    persist(); showEquip();
+  }));
+  equipEl.querySelector("#fight").addEventListener("click", startFight);
+  const switchPlayer = equipEl.querySelector("#switch");
+  if (switchPlayer) switchPlayer.addEventListener("click", () => showLogin());
+  const reset = equipEl.querySelector("#reset");
+  if (reset) reset.addEventListener("click", () => {
+    if (reset.dataset.armed) { save = NEW_SAVE(); persist(); showEquip(); }
+    else { reset.dataset.armed = "1"; reset.textContent = "Click again to erase all progress"; }
+  });
+  show(equipEl);
+}
+
+function startFight() {
+  const [oc, ow] = OPPONENTS[save.level - 1];
+  ai = aiParams(save.level);
+  t = 0; floats = []; outcome = null;
+  player = makeFighter(save.char, save.weapon, 200, false);
+  enemy = makeFighter(oc, ow, W - 200, true);
+  enemy.attackReadyAt = 1;  // a moment to get ready
+  save.fresh = null; persist();
+  keys.left = keys.right = keys.down = false;
+  state = "fight";
+  show(null);
+  canvas.focus();
+}
+
+function showResult() {
+  state = "result";
+  const lvl = save.level;
+  const [oc] = OPPONENTS[lvl - 1];
+  let html;
+  if (outcome === "won") save.wins += 1; else save.losses += 1;
+  if (outcome === "won" && lvl >= LEVELS) {
+    save.best = LEVELS; save.level = 1; persist();
+    html = `<div class="big">🏆</div><h1 class="youwin">YOU WIN!</h1>
+      <p>You beat all ${LEVELS} levels. You're the champion of the arena!</p>
+      <button class="go" id="next">Play again</button>`;
+  } else if (outcome === "won") {
+    const firstTime = lvl > save.best;
+    save.best = Math.max(save.best, lvl); save.level = lvl + 1;
+    let unlockHtml = "";
+    if (firstTime && UNLOCKS[lvl]) {
+      const [kind, id] = UNLOCKS[lvl], item = byId(listOf(kind), id);
+      save.fresh = `${kind}:${id}`;
+      const pic = kind === "char" ? (ASSETS[id] ? `<img src="${ASSETS[id]}" alt="">` : `<span class="big">${item.emoji}</span>`)
+                                  : `<img src="${weaponIcon(id)}" alt="">`;
+      unlockHtml = `<div class="unlock">${pic}<div style="text-align:left"><div class="kicker">Unlocked</div>
+        <h2>${item.name}</h2><p>${kind === "char" ? `${item.hp} xp health` : `${item.dmg} xp damage`}</p></div></div>`;
+    }
+    persist();
+    html = `<div class="big">🏅</div><h2>You beat level ${lvl}!</h2>${unlockHtml}
+      <p>Next up: level ${lvl + 1}. The AI gets tougher.</p><button class="go" id="next">Next level</button>`;
+  } else {
+    html = `<div class="big">💥</div><h2>Defeated on level ${lvl}</h2>
+      <p>The ${byId(CHARS, oc).name} won this time. Try a stronger fighter or weapon, use your shield, and jump to dodge.</p>
+      <button class="go" id="next">Try again</button>`;
+    persist();
+  }
+  resultEl.innerHTML = html;
+  resultEl.querySelector("#next").addEventListener("click", showEquip);
+  show(resultEl);
+}
+
+// ---------- input ----------
+const KEYMAP = { KeyA: "left", ArrowLeft: "left", KeyD: "right", ArrowRight: "right", KeyS: "down", ArrowDown: "down",
+  KeyW: "jump", ArrowUp: "jump", Space: "shield" };
+
+window.addEventListener("keydown", e => {
+  const action = KEYMAP[e.code];
+  if (!action || state !== "fight") return;
+  e.preventDefault();
+  if (action === "jump") { if (!e.repeat && onGround(player)) player.vy = -JUMP_V; }
+  else if (action === "shield") { if (!e.repeat) raiseShield(player); }
+  else keys[action] = true;
+});
+window.addEventListener("keyup", e => { const a = KEYMAP[e.code]; if (a in keys) keys[a] = false; });
+
+function arenaPoint(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height };
+}
+const overEnemy = p => enemy && Math.abs(p.x - enemy.x) <= 52 && p.y >= enemy.y - 104 && p.y <= enemy.y + 6;
+
+canvas.addEventListener("pointerdown", e => {
+  canvas.focus();
+  if (state === "fight" && overEnemy(arenaPoint(e))) attack(player, enemy);
+});
+canvas.addEventListener("pointermove", e => {
+  canvas.style.cursor = state === "fight" && overEnemy(arenaPoint(e)) ? (inReach(player, enemy) ? "crosshair" : "not-allowed") : "default";
+});
+
+// Pause when the game loses focus, so keys don't get stuck and the AI doesn't attack while you're away.
+window.addEventListener("blur", () => {
+  if (state !== "fight") return;
+  state = "paused"; keys.left = keys.right = keys.down = false; show(pausedEl);
+});
+pausedEl.addEventListener("click", () => { state = "fight"; show(null); canvas.focus(); });
+
+// ---------- loop ----------
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  if (state === "fight" || state === "ko") { t += dt; update(dt); }
+  render();
+  requestAnimationFrame(frame);
+}
+async function boot() {
+  if (!DATABASE) { loadLocal(); showEquip(); return; }
+  const remembered = store.get(PLAYER_KEY);
+  if (!remembered) { showLogin(); return; }
+  state = "login";
+  loginEl.innerHTML = "<p>Loading your progress…</p>";
+  show(loginEl);
+  try { await loadPlayer(remembered); showEquip(); }
+  catch (err) { playerName = null; showLogin(`Couldn't reach the database: ${err.message}`, remembered); }
+}
+
+// ---------- streamlit ----------
+// Tell Streamlit the game is ready (it answers with the first render, which calls boot()) and how tall it is.
+const wrap = document.getElementById("wrap");
+new ResizeObserver(() => post("streamlit:setFrameHeight", { height: Math.ceil(wrap.getBoundingClientRect().height) }))
+  .observe(wrap);
+post("streamlit:componentReady", { apiVersion: 1 });
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
